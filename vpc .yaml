@@ -1,0 +1,272 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Fully-featured VPC with monitoring, alerting, scheduling, and advanced configurations.
+
+Parameters:
+  VPCStartHour:
+    Type: String
+    Default: "9"
+    Description: Hour to start the VPC (24-hour format)
+
+  VPCEndHour:
+    Type: String
+    Default: "18"
+    Description: Hour to stop the VPC (24-hour format)
+
+  AdminIP:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: Admin IP range for SSH access (CIDR format)
+
+  InstanceType:
+    Type: String
+    Default: "t2.micro"
+    Description: EC2 instance type
+
+  KeyPairName:
+    Type: String
+    Default: ""
+    Description: Name of the existing key pair for SSH access (optional)
+
+  AlertEmail:
+    Type: String
+    Description: Email address to receive monitoring alerts.
+
+Resources:
+  # SNS Topic
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: VPCMonitoringTopic
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+      Tags:
+        - Key: Name
+          Value: MonitoringSNS
+
+  # VPC
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties: 
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: FullyFeaturedVPC
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: FullyFeaturedInternetGateway
+
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet
+
+  # Private Subnet
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.2.0/24
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet
+
+  # Security Groups
+  PublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow public access
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: PublicSecurityGroup
+
+  PrivateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow private access and SSH
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminIP
+      Tags:
+        - Key: Name
+          Value: PrivateSecurityGroup
+
+  # NAT Gateway Elastic IP
+  NATElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # NAT Gateway
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATElasticIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: FullyFeaturedNATGateway
+
+  # Route Table for Public Subnet
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Route Table for Private Subnet
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTable
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Auto-Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet
+      MinSize: 1
+      MaxSize: 5
+      DesiredCapacity: 2
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      Tags:
+        - Key: Name
+          Value: AutoScaledPrivateInstances
+          PropagateAtLaunch: true
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      ImageId: ami-0abcdef1234567890 # Replace with valid AMI ID
+      SecurityGroups:
+        - !Ref PrivateSecurityGroup
+
+  # VPC Flow Logs
+  VPCFlowLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: VPCFlowLogs
+      RetentionInDays: 14
+
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt FlowLogIAMRole.Arn
+      LogGroupName: !Ref VPCFlowLogs
+      ResourceId: !Ref MyVPC
+      ResourceType: VPC
+      TrafficType: ALL
+
+  FlowLogIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FlowLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: logs:CreateLogStream
+                Resource: "*"
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: "*"
+
+  # Auto-Scaling Notification
+  AutoScalingSNSNotification:
+    Type: AWS::AutoScaling::NotificationConfiguration
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      TopicARN: !Ref SNSTopic
+      NotificationTypes:
+        - autoscaling:EC2_INSTANCE_LAUNCH
+        - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+        - autoscaling:EC2_INSTANCE_TERMINATE
+        - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+
+Outputs:
+  SNSTopicArn:
+    Description: The ARN of the SNS Topic
+    Value: !Ref SNSTopic
+  VPCId:
+    Description: The ID of the VPC
+    Value: !Ref MyVPC
+  PublicSubnetId:
+    Description: The ID of the Public Subnet
+    Value: !Ref PublicSubnet
+  PrivateSubnetId:
+    Description: The ID of the Private Subnet
+    Value: !Ref PrivateSubnet
